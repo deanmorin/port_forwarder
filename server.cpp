@@ -93,7 +93,6 @@ int main(int argc, char** argv)
         ("epoll,e", "use epoll()")
         ("select,s", "use select()")
         ("poll,p", "use poll()")
-        ("threads,t", "use threads")
         ("port,P", po::value<int>(&opt)->default_value(DFLT_PORT),
                 "port to listen on")
         ("thread-pool,T", po::value<int>(&opt)->default_value(DFLT_THREADS),
@@ -145,7 +144,6 @@ int main(int argc, char** argv)
     {
         method = "epoll";
     }
-
     else if (vm.count("select"))
     {
         method = "select";
@@ -154,23 +152,11 @@ int main(int argc, char** argv)
     {
         method = "poll";
     }
-    else if (vm.count("threads"))
-    {
-        // run server with threads
-        runServerTh(port, threads, queue);
-    }
-    else
-    {
-        std::cerr << "Please specify which event base to use.\n";
-        std::cerr << "\tuse --help to see program options\n";
-    }
 
-    if (method.compare(""))
-    {
-        // run server with libevent and the specified event base
-        eb = initlibEvent(method.c_str());
-        runServer(eb, port, threads, queue);
-    }
+    // run server with libevent and the specified event base
+    eb = initlibEvent(method.c_str());
+    runServer(eb, port, threads, queue);
+
     return 0;
 }
 
@@ -390,141 +376,6 @@ void runServer(EventBase* eb, const int port, const int numWorkerThreads,
     event_base_dispatch(eb->getBase());
     event_del(sigint);
 }
-
-/**
- * Read message from fd, the return a packet of random characters.
- * @param args The socket to read from / write to.
- * @author Dean Morin
- */
-void readSockTh(void* args)
-{
-    evutil_socket_t* fd = (evutil_socket_t*) args;
-    char readBuf[REQUEST_SIZE];
-    uint32_t msgSize;
-
-    while (clearSocket(*fd, readBuf, REQUEST_SIZE) != -1)
-    {
-        msgSize = ((readBuf[3] << 24) & 0xFF000000)
-                + ((readBuf[2] << 16) & 0x00FF0000)
-                + ((readBuf[1] <<  8) & 0x0000FF00)
-                + ( readBuf[0]        & 0x000000FF);
-
-        char* writeBuf = new char[msgSize];
-
-        // fill the packet with random characters
-        for (size_t i = 0; i < msgSize; i++)
-        {
-            writeBuf[i] = rand() % 93 + 33;
-        }
-
-        send(*fd, writeBuf, msgSize, 0);
-
-        updateClientStats(*fd, msgSize);
-
-        delete writeBuf;
-    }
-    decrementClients(*fd);
-    close(*fd);
-    delete fd;
-}
-
-/**
- * Set up a new socket so that the port it's bound to can be immediately reused 
- * after exiting the program.
- * @param fd The socket to perform these operations on.
- * @author Dean Morin
- */
-void setUpSocket(evutil_socket_t fd)
-{
-    int arg = 1;
-    // set so port can be resused imemediately after ctrl-c
-    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg)) == -1) 
-    {
-        exit(sockError("setsockopt()", 0));
-    }
-}
-
-
-evutil_socket_t acceptClientTh(evutil_socket_t fd)
-{
-    evutil_socket_t fdNew;
-	struct sockaddr_in addr;
-	socklen_t addrSize = sizeof(struct sockaddr_in);
-
-    if ((fdNew = accept(fd, (struct sockaddr*) &addr, &addrSize)) == -1)
-    {
-        exit(sockError("accect()", 0));
-    }
-    setUpSocket(fdNew);
-    
-    incrementClients(fd, &addr);
-
-    return fdNew;
-}
-
-
-void runServerTh(const int port, const int numWorkerThreads,
-        const int maxQueueSize)
-{
-	struct sockaddr_in addr;
-    evutil_socket_t fd;
-
-    memset(&addr, 0, sizeof(addr));
-    addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
-
-    tPool* pool = NULL;
-    int blockWhenQueueFull = 1;
-
-    if (tPoolInit(&pool, numWorkerThreads, maxQueueSize, blockWhenQueueFull))
-    {
-        std::cerr << "Error initializing thread pool\n";
-        exit(1);
-    }        
-	
-    struct sigaction sigint;
-    sigint.sa_handler = shutDown;
-    sigint.sa_flags = 0;
-
-    if (sigemptyset(&sigint.sa_mask) == -1)
-    {
-        exit(sockError("sigemptyset()", 0));
-    }
-    if (sigaction(SIGINT, &sigint, NULL) == -1)
-    {
-        exit(sockError("sigaction()", 0));
-    }
-
-    if ((fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
-	{
-        exit(sockError("socket()", 0));
-	}
-
-    setUpSocket(fd);
-
-	if (bind(fd, (struct sockaddr*) &addr, sizeof(addr)) == -1)
-	{
-        exit(sockError("bind()", 0));
-	}
-    if (listen(fd, LISTEN_BACKLOG))
-    {
-        exit(sockError("listen()", 0));
-    }
-
-    while (true)
-    {
-        evutil_socket_t* fdNew = new evutil_socket_t();
-        *fdNew = acceptClientTh(fd);
-
-        if (tPoolAddJob(pool, readSockTh, fdNew))
-        {
-            std::cerr << "Error adding new job to thread pool\n";
-            exit(1);
-        }
-    }
-}
-
 
 void updateClientStats(evutil_socket_t fd, int data)
 {

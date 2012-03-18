@@ -18,26 +18,35 @@ EventBase::EventBase(const char* method)
     event_enable_debug_mode();
 #endif
 
-    struct event_config *config;
-    config = event_config_new();
-
-    int i = 0;
-    const char** availMethods = event_get_supported_methods();
-
-    for (i = 0; availMethods[i] != NULL; i++)
+    if (NULL == method || !strcmp(method, ""))
     {
-        if (strcmp(availMethods[i], method)) {
-            event_config_avoid_method(config, availMethods[i]);
-        }
+        // get the best base available on this system
+        base_ = event_base_new();
     }
-    base_ = event_base_new_with_config(config);
+    else
+    {
+        struct event_config *config;
+        config = event_config_new();
+
+        int i = 0;
+        const char** availMethods = event_get_supported_methods();
+
+        for (i = 0; availMethods[i] != NULL; i++)
+        {
+            if (strcmp(availMethods[i], method)) {
+                event_config_avoid_method(config, availMethods[i]);
+            }
+        }
+
+        base_ = event_base_new_with_config(config);
+
+        event_config_free(config);
+    }
 
     if (!base_)
     {
         throw BadBaseException();
     }
-    event_base_get_method(base_);
-    event_config_free(config);
 }
 
 

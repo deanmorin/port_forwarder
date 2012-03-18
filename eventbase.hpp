@@ -17,7 +17,8 @@ private:
 
 public:
     /**
-     * Creates a libevent base of the type specified by method.
+     * Creates a libevent base of the type specified by method. If method is
+     * NULL or "", then it will use the best event base available on the system.
      *
      * @author Dean Morin
      * @param method The event method to use (select, epoll, kqueue, etc.).
