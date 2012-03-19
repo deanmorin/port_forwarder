@@ -1,9 +1,50 @@
 #include "network.hpp"
+#include <arpa/inet.h>
 #include <errno.h>
 #include <iostream>
+#include <netdb.h>
 #include <stdlib.h>
-namespace dm
+#include <sys/socket.h>
+
+int connectSocket(const char* host, const int port)
 {
+    int sock;
+    struct sockaddr_in server;
+    struct hostent* hp;
+
+    if ((sock = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+    {
+        sockError("socket()", 0);
+        return -1;
+    }
+    int arg = 1;
+    // set so port can be resused imemediately after ctrl-c
+    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg)) == -1) 
+    {
+        sockError("setsockopt()", 0);
+        return -1;
+    }
+
+    // set up address structure
+    memset((char*) &server, 0, sizeof(struct sockaddr_in));
+    server.sin_family = AF_INET;
+    server.sin_port = htons(port);
+    if (!(hp = gethostbyname(host)))
+    {
+        fprintf(stderr, "Error: unknown server address\n");
+        exit(1);
+    }
+    memcpy((char*) &server.sin_addr, hp->h_addr, hp->h_length);
+
+    // connect
+    if (connect(sock, (struct sockaddr*) &server, sizeof(server)))
+    {
+        sockError("connect()", 0);
+        return -1;
+    }
+
+    return sock;
+}
 
 int clearSocket(int fd, char* buf, int bufsize)
 {
@@ -77,5 +118,3 @@ int sockError(const char* msg, int err)
     }
     return err;
 }
-
-} // namespace dm

@@ -15,7 +15,6 @@
 #include <vector>
 #include "network.hpp"
 namespace po = boost::program_options;
-using namespace dm;
 
 #define OUT_FILE        "response_times.csv"
 #define FILE_BUFSIZE    10
@@ -51,37 +50,11 @@ void* requestData(void* args)
     char* responseMsg = new char[ca->size];
     int bytesToRead = ca->size;
     int flag = 0;
+    int sock = -1;
 
-    int sock;
-    struct sockaddr_in server;
-    struct hostent* hp;
-
-    if ((sock = socket(PF_INET, SOCK_STREAM, 0)) == -1)
+    if ((sock = connectSocket(ca->host.c_str(), ca->port)) < 0)
     {
-        exit(sockError("socket()", 0));
-    }
-    int arg = 1;
-    // set so port can be resused imemediately after ctrl-c
-    if (setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &arg, sizeof(arg)) == -1) 
-    {
-        exit(sockError("setsockopt()", 0));
-    }
-
-    // set up address structure
-    memset((char*) &server, 0, sizeof(struct sockaddr_in));
-    server.sin_family = AF_INET;
-    server.sin_port = htons(ca->port);
-    if (!(hp = gethostbyname(ca->host.c_str())))
-    {
-        std::cerr << "Error: unknown server address\n";
         exit(1);
-    }
-    memcpy((char*) &server.sin_addr, hp->h_addr, hp->h_length);
-
-    // connect
-    if (connect(sock, (struct sockaddr*) &server, sizeof(server)))
-    {
-        exit(sockError("connect()", 0));
     }
 
 #ifdef __APPLE__

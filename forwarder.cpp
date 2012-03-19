@@ -9,12 +9,16 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <list>
 #include <map>
 #include <signal.h>
+#include <sstream>
 #include <stdio.h>
 #include <string>
+#include <sstream>
 #include "badbaseexception.hpp"
 #include "eventbase.hpp"
+#include "forwardinginfo.hpp"
 #include "network.hpp"
 #include "tpool.h"
 namespace po = boost::program_options;
@@ -23,6 +27,7 @@ using namespace dm;
 #define DFLT_THREADS    16
 #define DFLT_QUEUE      4096
 #define DFLT_PORT       32000
+#define DFLT_RULESFILE  "forward.csv"
 #define LISTEN_BACKLOG  65535
 
 struct clientStats
@@ -44,11 +49,10 @@ struct clientStats
  */
 EventBase* initlibEvent(const char* method);
 evutil_socket_t listenSock(const int port);
-void runServer(EventBase* eb, const int port, const int numWorkerThreads, 
-        const int maxQueueSize);
-void runServerTh(const int port, const int numWorkerThreads, 
+void runServer(EventBase* eb, const int numWorkerThreads, 
         const int maxQueueSize);
 void updateClientStats(evutil_socket_t fd, int data);
+void forwardingRules(std::string& fileName);
 
 /**
  * Increment the count of connected clients. Thread safe.
@@ -71,6 +75,7 @@ pthread_mutex_t jobMutex;
 int clientCount;
 int maxClientCount;
 std::map<evutil_socket_t, struct clientStats> clientStats;
+std::map<int, ForwardingInfo> clients;
 
 /**
  * A server intended to test the differences in efficiency between the various
@@ -81,20 +86,22 @@ std::map<evutil_socket_t, struct clientStats> clientStats;
 int main(int argc, char** argv)
 {
     int opt = 0;
-    int port = 0;
+    std::string sopt = "";
     int threads = 0;
     int queue = 0;
+    std::string rulesFile = "";
     EventBase* eb = NULL;
     std::string method = "";
 
     po::options_description desc("Allowed options");
     desc.add_options()
+        ("rules-file,f",
+                po::value<std::string>(&sopt)->default_value(DFLT_RULESFILE),
+                "the file with the forwarding rules")
         ("kqueue,k", "use kqueue()")
         ("epoll,e", "use epoll()")
         ("select,s", "use select()")
         ("poll,p", "use poll()")
-        ("port,P", po::value<int>(&opt)->default_value(DFLT_PORT),
-                "port to listen on")
         ("thread-pool,T", po::value<int>(&opt)->default_value(DFLT_THREADS),
                 "number of threads in the thread pool")
         ("max-queue,M", po::value<int>(&opt)->default_value(DFLT_QUEUE),
@@ -115,7 +122,7 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    port = vm["port"].as<int>();
+    rulesFile = vm["rules-file"].as<std::string>();
     threads = vm["thread-pool"].as<int>();
     queue = vm["max-queue"].as<int>();
     
@@ -153,11 +160,39 @@ int main(int argc, char** argv)
         method = "poll";
     }
 
-    // run server with libevent and the specified event base
+    forwardingRules(rulesFile);
     eb = initlibEvent(method.c_str());
-    runServer(eb, port, threads, queue);
+    runServer(eb, threads, queue);
 
     return 0;
+}
+
+
+void forwardingRules(std::string& fileName)
+{
+    std::ifstream in(fileName.c_str());
+    std::string line = "";                    
+    int forwarderPort = -1;
+    std::string serverName = "";
+    int serverPort = -1;
+
+    if (!in)
+    {
+        std::cerr << "Unable to open \"" << fileName << "\"\n";
+        exit(1);
+    }
+    
+    while (getline(in, line))
+    {             
+        char lineNonConst[128];
+        strcpy(lineNonConst, line.c_str());
+        forwarderPort = atoi(strtok(lineNonConst, ","));
+        serverName = strtok(NULL, ",");
+        serverPort = atoi(strtok(NULL, ","));
+
+        clients[forwarderPort].serverName_ = serverName;
+        clients[forwarderPort].serverPort_ = serverPort;
+    }
 }
 
 
@@ -216,6 +251,15 @@ void shutDown(int)
                   << "\tData sent:\t\t" << c.dataSent << "\n\n";
     }
 
+    std::map<int, ForwardingInfo>::iterator it2;
+    for (it2 = clients.begin(); it2 != clients.end(); ++it2)
+    {
+        ForwardingInfo c = it2->second;
+        std::cout << "\tPort:        " << it2->first    << "\n"
+                  << "\tServer Name: " << c.serverName_ << "\n"
+                  << "\tServer Port: " << c.serverPort_ << "\n\n";
+    }
+
     pthread_mutex_unlock(&clientMutex);
 
 	exit(0);
@@ -235,7 +279,15 @@ void handleSigurg(evutil_socket_t, short, void*)
  */
 void handleSigint(evutil_socket_t, short, void* arg)
 {
-    evconnlistener_free((struct evconnlistener*) arg);
+    std::list<struct evconnlistener*>* listenList
+            = (std::list<struct evconnlistener*>*) arg;
+
+    std::list<struct evconnlistener*>::iterator it;
+    for (it = listenList->begin(); it != listenList->end(); ++it)
+    {
+        evconnlistener_free(*it);
+    }
+
     shutDown(0);
 }
 
@@ -336,26 +388,68 @@ static void acceptErr(struct evconnlistener* listener, void*)
 static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
         struct sockaddr* sa, int, void* arg)
 {
+    int sock = -1;
+    int forwarderPort = 0;
+    std::string clientName = "";
+    int clientPort = 0;
+
     incrementClients(fd, (sockaddr_in*) sa);
 
     struct event_base* base = evconnlistener_get_base(listener);
     struct bufferevent* bev = bufferevent_socket_new(base, fd, 
             BEV_OPT_CLOSE_ON_FREE);
 
+    forwarderPort = ((sockaddr_in*) sa)->sin_port;
+
+    //serverName = clients[forwarderPort].serverName_;
+    //serverPort = clients[forwarderPort].serverPort_;
+
+    //if ((sock = connectSocket(serverName, serverPort)) < 0)
+    //{
+        //exit(1);
+    //}
+    //std::cerr << socket << " : socket\n";
+
     bufferevent_setcb(bev, readSock, NULL, sockEvent, arg);
     bufferevent_enable(bev, EV_READ | EV_WRITE); 
 }
 
-void runServer(EventBase* eb, const int port, const int numWorkerThreads,
-        const int maxQueueSize) 
+
+std::list<struct evconnlistener*>* bindListeners(EventBase* eb, tPool* pool)
 {
-	struct sockaddr_in addr;
     struct evconnlistener* listener;
+	struct sockaddr_in addr;
+    std::list<struct evconnlistener*>* listenList
+            = new std::list<struct evconnlistener*>();
 
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    addr.sin_port = htons(port);
+    
+    std::map<int, ForwardingInfo>::iterator it;
+    for (it = clients.begin(); it != clients.end(); ++it)
+    {
+        addr.sin_port = htons(it->first);
+#ifdef DEBUG
+        std::cout << "listening on port " << it->first << "\n";
+#endif
+        if (!(listener = evconnlistener_new_bind(eb->getBase(), acceptClient,
+                pool, LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, LISTEN_BACKLOG, 
+                (struct sockaddr*) &addr, sizeof(addr))))
+        {
+            exit(sockError("evconnlistener_new_bind()", 0));
+        }
+        evconnlistener_set_error_cb(listener, acceptErr);
+        listenList->push_back(listener);
+    }
+    return listenList;
+}
+
+
+void runServer(EventBase* eb, const int numWorkerThreads,
+        const int maxQueueSize) 
+{
+    std::list<struct evconnlistener*>* listenList;
 
     tPool* pool = NULL;
     int blockWhenQueueFull = 1;
@@ -366,16 +460,10 @@ void runServer(EventBase* eb, const int port, const int numWorkerThreads,
         exit(1);
     }
 
-    if (!(listener = evconnlistener_new_bind(eb->getBase(), acceptClient, pool, 
-            LEV_OPT_CLOSE_ON_FREE | LEV_OPT_REUSEABLE, LISTEN_BACKLOG, 
-            (struct sockaddr*) &addr, sizeof(addr))))
-    {
-        exit(sockError("evconnlistener_new_bind()", 0));
-    }
-    evconnlistener_set_error_cb(listener, acceptErr);
+    listenList = bindListeners(eb, pool);
 
     struct event* sigint;
-    sigint = evsignal_new(eb->getBase(), SIGINT, handleSigint, listener);
+    sigint = evsignal_new(eb->getBase(), SIGINT, handleSigint, listenList);
     evsignal_add(sigint, NULL);
 
     struct event* sigurg;
@@ -384,6 +472,7 @@ void runServer(EventBase* eb, const int port, const int numWorkerThreads,
 
     event_base_dispatch(eb->getBase());
     event_del(sigint);
+    event_del(sigurg);
 }
 
 void updateClientStats(evutil_socket_t fd, int data)

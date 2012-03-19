@@ -2,11 +2,11 @@
 #define DM_NETWORK_HPP
 #include <stdio.h>
 #include <sys/socket.h>
-namespace dm
-{
 
 /** The total size of the request packets sent to the server. */
 #define REQUEST_SIZE    66
+
+int connectSocket(const char* hostName, const int port);
 
 /**
  * Keep reading from the socket until bufsize bytes are read.
@@ -32,5 +32,4 @@ int clearSocket(int fd, char* buf, int bufsize);
  */
 int sockError(const char* msg, int err);
 
-} // namespace dm
 #endif
