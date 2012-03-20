@@ -312,6 +312,7 @@ void cancelJobs(tPool* tpool, struct bufferevent* bev)
         currentBev = (struct bufferevent*) currentJob->arg;
         if (currentBev == bev)
         {
+            delete (std::pair<struct bufferevent*, int*>*) currentJob->arg;
             currentJob->arg = NULL;
         }
         currentJob = currentJob->next;
@@ -349,11 +350,16 @@ void handleRequest(void* args)
         return;
     }
 
-    struct bufferevent* bev = (struct bufferevent*) args;
+    std::pair<struct bufferevent*, int*>* argPair
+            = (std::pair<struct bufferevent*, int*>*) args; 
+
+    struct bufferevent* bev = argPair->first;
     evutil_socket_t fd = bufferevent_getfd(bev);
 
     struct evbuffer *input = bufferevent_get_input(bev);
     struct evbuffer *output = bufferevent_get_output(bev);
+
+    int* serverSock = argPair->second;
     uint32_t msgSize;
     
     //struct sockaddr_in sin;
@@ -392,7 +398,13 @@ void handleRequest(void* args)
 
 static void readSock(struct bufferevent* bev, void* arg)
 {
-    if (tPoolAddJob(pool, handleRequest, bev))
+    int* psock = (int*) arg;
+    std::pair<struct bufferevent*, int*>* poolArgs
+            = new std::pair<struct bufferevent*, int*>();
+    poolArgs->first = bev;
+    poolArgs->second = psock;
+
+    if (tPoolAddJob(pool, handleRequest, poolArgs))
     {
         std::cerr << "Error adding new job to thread pool\n";
         exit(1);
@@ -412,6 +424,7 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
         struct sockaddr* sa, int, void*)
 {
     int sock = -1;
+    int* psock = NULL;
     int forwarderPort = 0;
     std::string serverName = "";
     int serverPort = 0;
@@ -451,8 +464,11 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     rules[forwarderPort].clients_[sock].name = clientName;
     rules[forwarderPort].clients_[sock].port = clientPort;
     rules[forwarderPort].clients_[sock].bev  = clientBev;
+    rules[forwarderPort].sockets_.push_back(sock);
 
-    bufferevent_setcb(bev, readSock, NULL, sockEvent, NULL); //last arg
+    psock = &rules[forwarderPort].sockets_.back();
+
+    bufferevent_setcb(bev, readSock, NULL, sockEvent, psock);
     bufferevent_enable(bev, EV_READ | EV_WRITE); 
 }
 
