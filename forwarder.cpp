@@ -39,6 +39,7 @@ struct clientStats
 };
 
 
+
 /**
  * Perform the initialization required to use the libevent library.
  *
@@ -75,6 +76,7 @@ int clientCount;
 int maxClientCount;
 std::map<evutil_socket_t, struct clientStats> clientStats;
 std::map<int, ForwardingInfo> rules;
+std::map<int, struct bufferevent*> connections;
 tPool* pool;
 
 /**
@@ -333,8 +335,24 @@ static void sockEvent(struct bufferevent* bev, short events, void*)
 
         pthread_mutex_lock(&jobMutex);
 
+
         cancelJobs(pool, bev);
+        struct bufferevent* otherBev = connections[bufferevent_getfd(bev)];
+
+#if DEBUG
+        struct sockaddr_in sin;
+        socklen_t len = sizeof(sin);
+        getsockname(bufferevent_getfd(bev), (struct sockaddr*) &sin, &len);
+        int port1 = ntohs(sin.sin_port);
+        getsockname(bufferevent_getfd(otherBev), (struct sockaddr*) &sin, &len);
+        int port2 = ntohs(sin.sin_port);
+        std::cerr << "DISCONNECT " << port1 << " : " << port2 << "\n";
+#endif
+
+        connections.erase(bufferevent_getfd(bev));
+        connections.erase(bufferevent_getfd(otherBev));
         bufferevent_free(bev);
+        bufferevent_free(otherBev);
 
         pthread_mutex_unlock(&jobMutex);
     }
@@ -350,61 +368,26 @@ void handleRequest(void* args)
         return;
     }
 
-    std::pair<struct bufferevent*, int*>* argPair
-            = (std::pair<struct bufferevent*, int*>*) args; 
+    struct bufferevent* srcBev = (struct bufferevent*) args;
+    evutil_socket_t fd = bufferevent_getfd(srcBev);
+    struct bufferevent* destBev = connections[fd];
 
-    struct bufferevent* bev = argPair->first;
-    evutil_socket_t fd = bufferevent_getfd(bev);
+    struct evbuffer *input = bufferevent_get_input(srcBev);
+    struct evbuffer *output = bufferevent_get_output(destBev);
 
-    struct evbuffer *input = bufferevent_get_input(bev);
-    struct evbuffer *output = bufferevent_get_output(bev);
-
-    int* serverSock = argPair->second;
+    // need to get this for stats
     uint32_t msgSize;
     
-    //struct sockaddr_in sin;
-    //socklen_t len = sizeof(sin);
-
-    //if (getsockname(fd, (struct sockaddr*) &sin, &len))
-    //{
-        //exit(sockError("getsockname()", 0));
-    //}
-    //forwarderPort = ntohs(sin.sin_port);
-
-    //serverName = rules[forwarderPort].serverName_;
-    //serverPort = rules[forwarderPort].serverPort_;
-    
-    //clientName = inet_ntoa(clientsa->sin_addr);
-    //clientPort = ntohs(clientsa->sin_port);
-    if (evbuffer_copyout(input, &msgSize, sizeof(uint32_t)) == -1)
-    {
-        std::cerr << "Error: evbuffer_copyout\n";
-    }
-
-    char* buf = new char[msgSize];
-
-    // fill the packet with random characters
-    for (size_t i = 0; i < msgSize; i++)
-    {
-        buf[i] = rand() % 93 + 33;
-    }
-    evbuffer_add(output, buf, msgSize);
+    evbuffer_add_buffer(output, input);
 
     pthread_mutex_unlock(&jobMutex);
 
     updateClientStats(fd, msgSize);
-    delete[] buf;
 }
 
 static void readSock(struct bufferevent* bev, void* arg)
 {
-    int* psock = (int*) arg;
-    std::pair<struct bufferevent*, int*>* poolArgs
-            = new std::pair<struct bufferevent*, int*>();
-    poolArgs->first = bev;
-    poolArgs->second = psock;
-
-    if (tPoolAddJob(pool, handleRequest, poolArgs))
+    if (tPoolAddJob(pool, handleRequest, bev))
     {
         std::cerr << "Error adding new job to thread pool\n";
         exit(1);
@@ -441,6 +424,7 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     struct sockaddr_in sin;
     socklen_t len = sizeof(sin);
 
+    // get the port so we can see where to forward it to
     if (getsockname(evconnlistener_get_fd(listener),
                 (struct sockaddr*) &sin, &len))
     {
@@ -454,6 +438,10 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     clientName = inet_ntoa(clientsa->sin_addr);
     clientPort = ntohs(clientsa->sin_port);
 
+    std::cout << "\nForwarding To\n=============\n";
+    std::cout << serverName << "\n";
+    std::cout << "port " << serverPort << "\n";
+
     if ((sock = connectSocket(serverName.c_str(), serverPort)) < 0)
     {
         std::cerr << "could not find " << serverName << "\n";
@@ -461,15 +449,13 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     struct bufferevent* clientBev = bufferevent_socket_new(base, sock, 
             BEV_OPT_CLOSE_ON_FREE);
 
-    rules[forwarderPort].clients_[sock].name = clientName;
-    rules[forwarderPort].clients_[sock].port = clientPort;
-    rules[forwarderPort].clients_[sock].bev  = clientBev;
-    rules[forwarderPort].sockets_.push_back(sock);
+    connections[fd] = clientBev;
+    connections[sock] = bev;
 
-    psock = &rules[forwarderPort].sockets_.back();
-
-    bufferevent_setcb(bev, readSock, NULL, sockEvent, psock);
+    bufferevent_setcb(bev, readSock, NULL, sockEvent, NULL);
+    bufferevent_setcb(clientBev, readSock, NULL, sockEvent, NULL);
     bufferevent_enable(bev, EV_READ | EV_WRITE); 
+    bufferevent_enable(clientBev, EV_READ | EV_WRITE); 
 }
 
 
@@ -546,7 +532,7 @@ void incrementClients(evutil_socket_t fd, struct sockaddr_in* sa)
 #endif
     // add client to map
     clientStats[fd].hostName = inet_ntoa(sa->sin_addr);
-    clientStats[fd].port = sa->sin_port;
+    clientStats[fd].port = ntohs(sa->sin_port);
 
     pthread_mutex_unlock(&clientMutex);
 }

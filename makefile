@@ -19,7 +19,7 @@ endif
 all : $(server) $(client) $(forwarder)
 
 debug : flags += $(dflags)
-debug : $(server) $(client)
+debug : $(server) $(client) $(forwarder)
 
 $(client) : bin = $(client)
 $(client) : $(cobj)
