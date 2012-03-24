@@ -276,6 +276,19 @@ void shutDown(int)
 	exit(0);
 }
 
+void handleSigurg2(int signo)
+{	
+    int n;
+	char buff[100];
+
+	//printf("SIGURG received\n");
+	//n = recv(new_sd, buff, sizeof(buff) - 1, MSG_OOB);
+	//buff[n] = 0;
+	//printf("read %d OOB byte: %c\n", n, buff[0]);
+
+    std::cout << "2 - Out of band data arrived. Probably best to just ignore it...\n";
+}
+
 void handleSigurg(evutil_socket_t, short, void*)
 {
     std::cout << "Out of band data arrived. Probably best to just ignore it...\n";
@@ -500,8 +513,10 @@ void runServer(EventBase* eb)
     evsignal_add(sigint, NULL);
 
     struct event* sigurg;
-    sigurg = evsignal_new(eb->getBase(), SIGURG, handleSigurg, NULL);
+    sigurg = evsignal_new(eb->getBase(), SIGINT, handleSigurg, listenList);
     evsignal_add(sigurg, NULL);
+
+    signal(SIGURG, handleSigurg2);
 
     event_base_dispatch(eb->getBase());
     event_del(sigint);
