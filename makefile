@@ -6,7 +6,7 @@ compiler = g++
 flags = -W -Wall -pedantic
 dflags = -g -DDEBUG -DUSE_DEBUG
 lib = -lboost_program_options-mt -lpthread
-cmp = $(compiler) $(flags) $(inc) -c
+cmp = $(compiler) $(flags) -c
 lnk = $(compiler) $(flags) $(lib) -o $(bin)
 cobj = client.o network.o
 sobj = server.o eventbase.o network.o tpool.o
@@ -49,6 +49,9 @@ $(forwarder) : bin = $(forwarder)
 $(forwarder) : lib += -levent -levent_pthreads
 $(forwarder) : $(fobj)
 	$(lnk) $(fobj)
+
+forwarder.o : forwarder.cpp
+	$(cmp) forwarder.cpp
 
 forwardinginfo.o : forwardinginfo.cpp forwardinginfo.hpp
 	$(cmp) forwardinginfo.cpp

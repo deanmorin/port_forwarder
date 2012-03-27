@@ -352,14 +352,14 @@ static void sockEvent(struct bufferevent* bev, short events, void*)
         cancelJobs(pool, bev);
         struct bufferevent* otherBev = connections[bufferevent_getfd(bev)];
 
-#if DEBUG
+#ifdef DEBUG
         struct sockaddr_in sin;
         socklen_t len = sizeof(sin);
         getsockname(bufferevent_getfd(bev), (struct sockaddr*) &sin, &len);
         int port1 = ntohs(sin.sin_port);
-        getsockname(bufferevent_getfd(otherBev), (struct sockaddr*) &sin, &len);
-        int port2 = ntohs(sin.sin_port);
-        std::cerr << "DISCONNECT " << port1 << " : " << port2 << "\n";
+        //getsockname(bufferevent_getfd(otherBev), (struct sockaddr*) &sin, &len);
+        //int port2 = ntohs(sin.sin_port);
+        std::cerr << "DISCONNECT " << port1 << " : " << "\n";
 #endif
 
         connections.erase(bufferevent_getfd(bev));
@@ -398,7 +398,7 @@ void handleRequest(void* args)
     updateClientStats(fd, msgSize);
 }
 
-static void readSock(struct bufferevent* bev, void* arg)
+static void readSock(struct bufferevent* bev, void*)
 {
     if (tPoolAddJob(pool, handleRequest, bev))
     {
@@ -420,7 +420,6 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
         struct sockaddr* sa, int, void*)
 {
     int sock = -1;
-    int* psock = NULL;
     int forwarderPort = 0;
     std::string serverName = "";
     int serverPort = 0;
@@ -432,7 +431,8 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
 
     struct event_base* base = evconnlistener_get_base(listener);
     struct bufferevent* bev = bufferevent_socket_new(base, fd, 
-            BEV_OPT_CLOSE_ON_FREE);
+            BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS | 
+            BEV_OPT_THREADSAFE | BEV_OPT_UNLOCK_CALLBACKS);
 
     struct sockaddr_in sin;
     socklen_t len = sizeof(sin);
@@ -460,7 +460,8 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
         std::cerr << "could not find " << serverName << "\n";
     }
     struct bufferevent* clientBev = bufferevent_socket_new(base, sock, 
-            BEV_OPT_CLOSE_ON_FREE);
+            BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS |
+            BEV_OPT_THREADSAFE | BEV_OPT_UNLOCK_CALLBACKS);
 
     connections[fd] = clientBev;
     connections[sock] = bev;
@@ -472,7 +473,7 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
 }
 
 
-std::list<struct evconnlistener*>* bindListeners(EventBase* eb, tPool* pool)
+std::list<struct evconnlistener*>* bindListeners(EventBase* eb)
 {
     struct evconnlistener* listener;
 	struct sockaddr_in addr;
@@ -506,7 +507,7 @@ void runServer(EventBase* eb)
 {
     std::list<struct evconnlistener*>* listenList;
 
-    listenList = bindListeners(eb, pool);
+    listenList = bindListeners(eb);
 
     struct event* sigint;
     sigint = evsignal_new(eb->getBase(), SIGINT, handleSigint, listenList);
