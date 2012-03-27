@@ -262,6 +262,8 @@ void shutDown(int)
                   << "\tData sent:\t\t" << c.dataSent << "\n\n";
     }
 
+    std::cout << "Forwarding Rules: \n\n";
+
     std::map<int, ForwardingInfo>::iterator it2;
     for (it2 = rules.begin(); it2 != rules.end(); ++it2)
     {
@@ -276,15 +278,12 @@ void shutDown(int)
 	exit(0);
 }
 
-void handleSigurg2(int signo)
+void handleSigurg2(int)
 {	
-    int n;
-	char buff[100];
+    //int n;
+	//char buff[100];
 
-	//printf("SIGURG received\n");
-	//n = recv(new_sd, buff, sizeof(buff) - 1, MSG_OOB);
-	//buff[n] = 0;
-	//printf("read %d OOB byte: %c\n", n, buff[0]);
+	//n = recv(sd, buff, sizeof(buff) - 1, MSG_OOB);
 
     std::cout << "2 - Out of band data arrived. Probably best to just ignore it...\n";
 }
@@ -357,9 +356,9 @@ static void sockEvent(struct bufferevent* bev, short events, void*)
         socklen_t len = sizeof(sin);
         getsockname(bufferevent_getfd(bev), (struct sockaddr*) &sin, &len);
         int port1 = ntohs(sin.sin_port);
-        //getsockname(bufferevent_getfd(otherBev), (struct sockaddr*) &sin, &len);
-        //int port2 = ntohs(sin.sin_port);
-        std::cerr << "DISCONNECT " << port1 << " : " << "\n";
+        getsockname(bufferevent_getfd(otherBev), (struct sockaddr*) &sin, &len);
+        int port2 = ntohs(sin.sin_port);
+        std::cerr << "DISCONNECT " << port1 << " : " << port2 << "\n";
 #endif
 
         connections.erase(bufferevent_getfd(bev));
@@ -451,9 +450,9 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     clientName = inet_ntoa(clientsa->sin_addr);
     clientPort = ntohs(clientsa->sin_port);
 
-    std::cout << "\nForwarding To\n=============\n";
-    std::cout << serverName << "\n";
-    std::cout << "port " << serverPort << "\n";
+    std::cout << "\nForwarding From/To\n=================\n";
+    std::cout << clientName << " --> " << serverName << "\n";
+    std::cout << clientPort << " --> " << serverPort << "\n";
 
     if ((sock = connectSocket(serverName.c_str(), serverPort)) < 0)
     {
@@ -462,6 +461,16 @@ static void acceptClient(struct evconnlistener* listener, evutil_socket_t fd,
     struct bufferevent* clientBev = bufferevent_socket_new(base, sock, 
             BEV_OPT_CLOSE_ON_FREE | BEV_OPT_DEFER_CALLBACKS |
             BEV_OPT_THREADSAFE | BEV_OPT_UNLOCK_CALLBACKS);
+
+#ifdef DEBUG
+        struct sockaddr_in addr;
+        socklen_t length = sizeof(addr);
+        getsockname(bufferevent_getfd(bev), (struct sockaddr*) &addr, &length);
+        int port1 = ntohs(addr.sin_port);
+        getsockname(bufferevent_getfd(clientBev), (struct sockaddr*) &addr, &len);
+        int port2 = ntohs(addr.sin_port);
+        std::cerr << "CONNECT " << port1 << " : " << port2 << "\n";
+#endif
 
     connections[fd] = clientBev;
     connections[sock] = bev;
@@ -544,7 +553,7 @@ void incrementClients(evutil_socket_t fd, struct sockaddr_in* sa)
         maxClientCount = clientCount;
     }
 #ifdef DEBUG
-    std::cout << "Clients++ " << clientCount << "\n";
+    //std::cout << "Clients++ " << clientCount << "\n";
 #endif
     // add client to map
     clientStats[fd].hostName = inet_ntoa(sa->sin_addr);
@@ -560,7 +569,7 @@ void decrementClients(evutil_socket_t fd)
 
     clientCount--;
 #ifdef DEBUG
-    std::cout << "Clients-- " << clientCount << "\n";
+    //std::cout << "Clients-- " << clientCount << "\n";
 #endif
     clientStats.erase(fd);
 
